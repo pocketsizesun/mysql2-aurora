@@ -11,8 +11,21 @@ module Mysql2
     class Client
       attr_reader :client
 
+      AuroraReadOnlyError = Class.new(StandardError) do
+        attr_reader :innodb_read_only_value
+
+        def initialize(innodb_read_only_value)
+          @innodb_read_only_value = innodb_read_only_value
+          super("innodb_read_only_value was '#{innodb_read_only_value}', expected: 'OFF'")
+        end
+      end
+
+      AURORA_READONLY_ERROR = '--read-only'
+      AURORA_READONLY_CHECK_QUERY = \
+        "SHOW GLOBAL VARIABLES LIKE 'innodb_read_only';"
+
       AURORA_RECONNECT_ERROR_MESSAGES = [
-        '--read-only',
+        AURORA_READONLY_ERROR,
         'client is not connected',
         'Lost connection to MySQL server',
         "Can't connect to MySQL",
@@ -41,6 +54,10 @@ module Mysql2
         end
       end
 
+      def aurora_readonly_error?(message)
+        message.include?(AURORA_READONLY_ERROR)
+      end
+
       def aurora_reconnect_error?(message)
         AURORA_RECONNECT_ERROR_MESSAGES.any? do |matching_str|
           message.include?(matching_str)
@@ -62,7 +79,7 @@ module Mysql2
         @client.query_options.merge!(query_options)
       end
 
-      def aurora_auto_reconnect!
+      def aurora_auto_reconnect!(error)
         warn "[mysql2-aurora] Auto-reconnect on error, max retries: #{@max_retry}"
         try_count = 0
         begin
@@ -71,13 +88,21 @@ module Mysql2
           warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds}seconds"
           sleep retry_interval_seconds
           reconnect!
-          innodb_readonly_result = client.query("SHOW GLOBAL VARIABLES LIKE 'innodb_read_only';").to_a.first
 
-          if !innodb_readonly_result.nil? &&
-             innodb_readonly_result.fetch('Value', '').to_s.upcase == 'OFF'
-            return
+          return unless aurora_readonly_error?(error.message)
+
+          # if error was a readonly type, it must check that we are not being
+          # reconnected to a slave, so we ensure
+          innodb_readonly_result = client.query(
+            AURORA_READONLY_CHECK_QUERY
+          ).to_a.first
+
+          if innodb_readonly_result.nil? ||
+             innodb_readonly_result.fetch('Value', '').to_s.upcase != 'OFF'
+            raise AuroraReadOnlyError
           end
         rescue => e
+          warn "[mysql2-aurora] auto reconnect error: #{e.message}"
           try_count += 1
           raise e if try_count > @max_retry
 
