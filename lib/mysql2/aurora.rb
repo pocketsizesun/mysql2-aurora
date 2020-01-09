@@ -25,7 +25,7 @@ module Mysql2
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          if e.message&.include?('--read-only') || e.message&.include('client is not connected')
+          if e.message&.include?('--read-only') || e.message&.include?('client is not connected') || e.message&.include?('Lost connection to MySQL server')
             try_count = 0
             until try_count > @max_retry
               try_count += 1
