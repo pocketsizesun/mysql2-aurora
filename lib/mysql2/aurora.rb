@@ -15,7 +15,8 @@ module Mysql2
         '--read-only',
         'client is not connected',
         'Lost connection to MySQL server',
-        "Can't connect to MySQL"
+        "Can't connect to MySQL",
+        'Server shutdown in progress'
       ].freeze
 
       # Initialize class
