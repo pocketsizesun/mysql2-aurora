@@ -48,7 +48,7 @@ module Mysql2
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          aurora_auto_reconnect! if aurora_reconnect_error?(e.message.to_s)
+          aurora_auto_reconnect!(e) if aurora_reconnect_error?(e.message.to_s)
 
           raise e
         end
@@ -92,7 +92,9 @@ module Mysql2
           return unless aurora_readonly_error?(error.message)
 
           # if error was a readonly type, it must check that we are not being
-          # reconnected to a slave, so we ensure
+          # reconnected to a slave, so we ensure that we are connected to a
+          # master node by checking 'innodb_read_only' MySQL's variable
+          # it must be set to 'OFF' if we are on the master
           innodb_readonly_result = client.query(
             AURORA_READONLY_CHECK_QUERY
           ).to_a.first
