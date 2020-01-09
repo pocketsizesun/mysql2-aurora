@@ -80,8 +80,8 @@ module Mysql2
       end
 
       def aurora_auto_reconnect!(error)
-        warn "[mysql2-aurora] Auto-reconnect on error, max retries: #{@max_retry}"
-        try_count = 0
+        warn "[mysql2-aurora] auto reconnect origin error: #{error.message}, max retries: #{@max_retry}"
+        try_count = 1
         begin
           retry_interval_seconds = [1.5 * (try_count - 1), 10].min
 
@@ -110,6 +110,8 @@ module Mysql2
 
           retry
         end
+
+        warn "[mysql2-aurora] auto-reconnect success"
       end
 
       # Delegate method call to client.
