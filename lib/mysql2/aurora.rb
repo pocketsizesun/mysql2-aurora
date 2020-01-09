@@ -22,24 +22,25 @@ module Mysql2
       # Execute query with reconnect
       # @note [Override] with reconnect.
       def query(*args)
-        try_count = 0
-
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          try_count += 1
+          if e.message&.include?('--read-only')
+            try_count = 0
+            until try_count > @max_retry
+              try_count += 1
+              retry_interval_seconds = [1.5 * (try_count - 1), 10].min
 
-          if e.message&.include?('--read-only') && try_count <= @max_retry
-            retry_interval_seconds = [1.5 * (try_count - 1), 10].min
-
-            warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds}seconds"
-            sleep retry_interval_seconds
-            reconnect!
-
-            retry
-          else
-            raise e
+              warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds}seconds"
+              sleep retry_interval_seconds
+              reconnect!
+              innodb_readonly_result = client.query("SHOW GLOBAL VARIABLES LIKE 'innodb_read_only';").to_a.first
+              
+              break if !innodb_readonly_result.nil? && innodb_readonly_result['Value']&.upcase == 'OFF'
+            end
           end
+          
+          raise e
         end
       end
 
