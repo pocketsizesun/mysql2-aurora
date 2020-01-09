@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'mysql2/aurora/version'
 require 'mysql2'
 
@@ -8,6 +10,13 @@ module Mysql2
     # Implement client patch
     class Client
       attr_reader :client
+
+      AURORA_RETRYABLE_ERROR_MESSAGES = [
+        '--read-only',
+        'client is not connected',
+        'Lost connection to MySQL server',
+        "Can't connect to MySQL"
+      ].freeze
 
       # Initialize class
       # @note [Override] with reconnect options
@@ -25,7 +34,7 @@ module Mysql2
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          if e.message&.include?('--read-only') || e.message&.include?('client is not connected') || e.message&.include?('Lost connection to MySQL server')
+          if aurora_retryable_error?(e.message.to_s)
             try_count = 0
             until try_count > @max_retry
               try_count += 1
@@ -41,6 +50,12 @@ module Mysql2
           end
           
           raise e
+        end
+      end
+      
+      def aurora_retryable_error?(message)
+        AURORA_RETRYABLE_ERROR_MESSAGES.any? do |matching_str|
+          message.include?(matching_str)
         end
       end
 
