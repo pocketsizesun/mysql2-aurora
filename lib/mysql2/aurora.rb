@@ -48,7 +48,7 @@ module Mysql2
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          if aurora_reconnect_error?(e.message) && false
+          if aurora_reconnect_error?(e.message)
             aurora_auto_reconnect!(e)
           else
             raise e
