@@ -39,7 +39,7 @@ module Mysql2
       def initialize(opts)
         @opts      = Mysql2::Util.key_hash_as_symbols(opts)
         @max_retry = (@opts.delete(:aurora_max_retry) || 5).to_i
-        reconnect!
+        aurora_reconnect!
       end
 
       # Execute query with reconnect
@@ -48,9 +48,11 @@ module Mysql2
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          aurora_auto_reconnect!(e) if aurora_reconnect_error?(e.message.to_s)
-
-          raise e
+          if aurora_reconnect_error?(e.message) && false
+            aurora_auto_reconnect!(e)
+          else
+            raise e
+          end
         end
       end
 
@@ -66,13 +68,16 @@ module Mysql2
 
       # Reconnect to database and Set `@client`
       # @note If client is not connected, Connect to database.
-      def reconnect!
-        query_options = (@client&.query_options&.dup || {})
-
-        begin
-          @client&.close
-        rescue StandardError
-          nil
+      def aurora_reconnect!
+        query_options = {}
+        unless @client.nil?
+          query_options = query_options.merge(@client.query_options || {})
+          begin
+            @client.close
+          rescue StandardError => e
+            warn "[mysql2-aurora] client close error: #{e.message} (#{e.class})"
+            nil
+          end
         end
 
         @client = Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.new(@opts)
@@ -85,9 +90,9 @@ module Mysql2
         begin
           retry_interval_seconds = [1.5 * (try_count - 1), 10].min
 
-          warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds}seconds"
+          warn "[mysql2-aurora] Retry after #{retry_interval_seconds}seconds"
           sleep retry_interval_seconds
-          reconnect!
+          aurora_reconnect!
 
           return unless aurora_readonly_error?(error.message)
 
@@ -119,7 +124,7 @@ module Mysql2
       # @param [Array]  args  Method arguments
       # @param [Proc]   block Method block
       def method_missing(name, *args, &block) # rubocop:disable Style/MethodMissingSuper, Style/MissingRespondToMissing
-        client.public_send(name, *args, &block)
+        @client.public_send(name, *args, &block)
       end
 
       # Delegate method call to Mysql2::Client.
