@@ -36,7 +36,7 @@ module Mysql2
               reconnect!
               innodb_readonly_result = client.query("SHOW GLOBAL VARIABLES LIKE 'innodb_read_only';").to_a.first
               
-              break if !innodb_readonly_result.nil? && innodb_readonly_result['Value']&.upcase == 'OFF'
+              break if !innodb_readonly_result.nil? && innodb_readonly_result.fetch('Value', '').to_s.upcase == 'OFF'
             end
           end
           
