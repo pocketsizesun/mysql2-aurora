@@ -22,7 +22,7 @@ module Mysql2
         end
       end
 
-      AURORA_READONLY_ERROR = '--read-only'
+      AURORA_READONLY_ERROR = 'read-only'
       AURORA_READONLY_CHECK_QUERY = \
         "SHOW GLOBAL VARIABLES LIKE '%s';"
 
@@ -39,19 +39,24 @@ module Mysql2
       # @param [Hash] opts Options
       # @option opts [Integer] aurora_max_retry Max retry count, when failover. (Default: 5)
       def initialize(opts)
-        @original_args = opts
         @opts      = Mysql2::Util.key_hash_as_symbols(opts)
         @max_retry = (@opts.delete(:aurora_max_retry) || 5).to_i
         aurora_reconnect!
       end
 
       def aurora_reconnect!
-        begin
-          @client.close unless @client.nil?
-        rescue => e
-          warn "[mysql2-aurora] reconnect! error: #{e.message} (#{e.class})"
+        query_options = {}
+        unless @client.nil?
+          begin
+            @client.close
+            query_options = (@client.query_options&.dup || {})
+          rescue => e
+            warn "[mysql2-aurora] reconnect! error: #{e.message} (#{e.class})"
+          end
         end
-        @client = ::Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.new(@original_args)
+
+        @client = ::Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.new(@opts)
+        @client.query_options.merge!(query_options)
       end
 
       # Execute query with reconnect
@@ -149,7 +154,7 @@ module Mysql2
     end
 
     def read_only_variable
-      @read_only_variable ||= 'innodb_read_only'
+      @read_only_variable ||= 'read_only'
     end
   end
 end
