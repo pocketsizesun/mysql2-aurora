@@ -22,12 +22,11 @@ module Mysql2
         end
       end
 
-      AURORA_READONLY_ERROR = 'read-only'
+      AURORA_READONLY_ERROR = /(read-only|READ ONLY)/i
       AURORA_READONLY_CHECK_QUERY = \
         "SHOW GLOBAL VARIABLES LIKE '%s';"
 
       AURORA_CONNECTION_ERRORS = [
-        AURORA_READONLY_ERROR,
         'client is not connected',
         'Lost connection to MySQL server',
         "Can't connect to MySQL",
@@ -76,7 +75,7 @@ module Mysql2
       end
 
       def aurora_readonly_error?(message)
-        message.include?(AURORA_READONLY_ERROR)
+        message.match?(AURORA_READONLY_ERROR)
       end
 
       def aurora_connection_error?(message)
