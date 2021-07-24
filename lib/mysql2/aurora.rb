@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require 'mysql2/aurora/version'
 require 'mysql2'
 
@@ -7,31 +5,9 @@ module Mysql2
   # mysql2 aurora module
   # @note This module patch Mysql2::Client
   module Aurora
-    ORIGINAL_CLIENT_CLASS = ::Mysql2.send(:remove_const, :Client)
-
     # Implement client patch
     class Client
       attr_reader :client
-
-      AuroraReadOnlyError = Class.new(StandardError) do
-        attr_reader :read_only_value
-
-        def initialize(read_only_value)
-          @read_only_value = read_only_value
-          super("read_only_value was '#{read_only_value}', expected: 'OFF'")
-        end
-      end
-
-      AURORA_READONLY_ERROR = /(read-only|READ ONLY)/i
-      AURORA_READONLY_CHECK_QUERY = \
-        "SHOW GLOBAL VARIABLES LIKE '%s';"
-
-      AURORA_CONNECTION_ERRORS = [
-        'client is not connected',
-        'Lost connection to MySQL server',
-        "Can't connect to MySQL",
-        'Server shutdown in progress'
-      ].freeze
 
       # Initialize class
       # @note [Override] with reconnect options
@@ -48,7 +24,8 @@ module Mysql2
       # Execute query with reconnect
       # @note [Override] with reconnect.
       def query(*args)
-        aurora_reconnect! if client.closed?
+        try_count = 0
+
         begin
           client.query(*args)
         rescue Mysql2::Error => e
@@ -79,7 +56,8 @@ module Mysql2
 
         disconnect!
 
-        warn "[mysql2-aurora] auto-reconnect success"
+        @client = Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.new(@opts)
+        @client.query_options.merge!(query_options)
       end
 
       # Close connection to database server
@@ -94,7 +72,7 @@ module Mysql2
       # @param [Array]  args  Method arguments
       # @param [Proc]   block Method block
       def method_missing(name, *args, &block) # rubocop:disable Style/MethodMissingSuper, Style/MissingRespondToMissing
-        @client.__send__(name, *args, &block)
+        client.public_send(name, *args, &block)
       end
 
       # Delegate method call to Mysql2::Client.
@@ -102,27 +80,18 @@ module Mysql2
       # @param [Array]  args  Method arguments
       # @param [Proc]   block Method block
       def self.method_missing(name, *args, &block) # rubocop:disable Style/MethodMissingSuper, Style/MissingRespondToMissing
-        ::Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.__send__(
-          name, *args, &block
-        )
+        Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.public_send(name, *args, &block)
       end
 
       # Delegate const reference to class.
       # @param [Symbol] name Const name
       def self.const_missing(name)
-        ::Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.const_get(name)
+        Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.const_get(name)
       end
     end
 
-    module_function
-    def read_only_variable=(arg)
-      @read_only_variable = arg.to_s
-    end
-
-    def read_only_variable
-      @read_only_variable ||= 'read_only'
-    end
+    # Swap Mysql2::Client
+    ORIGINAL_CLIENT_CLASS = Mysql2.send(:remove_const, :Client)
+    Mysql2.const_set(:Client, Mysql2::Aurora::Client)
   end
 end
-
-Mysql2.const_set(:Client, ::Mysql2::Aurora::Client)
