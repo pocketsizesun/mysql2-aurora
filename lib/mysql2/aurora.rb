@@ -37,25 +37,12 @@ module Mysql2
       # @note [Override] with reconnect options
       # @param [Hash] opts Options
       # @option opts [Integer] aurora_max_retry Max retry count, when failover. (Default: 5)
+      # @option opts [Bool] aurora_disconnect_on_readonly, when readonly exception hit terminate the connection (Default: false)
       def initialize(opts)
-        @opts      = Mysql2::Util.key_hash_as_symbols(opts)
-        @max_retry = (@opts.delete(:aurora_max_retry) || 5).to_i
-        aurora_reconnect!
-      end
-
-      def aurora_reconnect!
-        query_options = {}
-        unless @client.nil?
-          begin
-            @client.close
-            query_options = (@client.query_options&.dup || {})
-          rescue => e
-            warn "[mysql2-aurora] reconnect! error: #{e.message} (#{e.class})"
-          end
-        end
-
-        @client = ::Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.new(@opts)
-        @client.query_options.merge!(query_options)
+        @opts = Mysql2::Util.key_hash_as_symbols(opts)
+        @max_retry = @opts.delete(:aurora_max_retry) || 5
+        @disconnect_only = @opts.delete(:aurora_disconnect_on_readonly) || false
+        reconnect!
       end
 
       # Execute query with reconnect
@@ -64,62 +51,42 @@ module Mysql2
         aurora_reconnect! if client.closed?
         begin
           client.query(*args)
-        rescue ::Mysql2::Error => e
-          if aurora_connection_error?(e.message)
-            aurora_wait_for_availability_after(e)
-            aurora_reconnect!
+        rescue Mysql2::Error => e
+          raise e unless e.message&.include?('--read-only')
+
+          try_count += 1
+
+          if @disconnect_only
+            warn '[mysql2-aurora] Database is readonly, Aurora failover event likely occured, closing database connection'
+            disconnect!
+          elsif try_count <= @max_retry
+            retry_interval_seconds = [1.5 * (try_count - 1), 10].min
+
+            warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds}seconds"
+            sleep retry_interval_seconds
+            reconnect!
+            retry
           end
 
           raise e
         end
       end
 
-      def aurora_readonly_error?(message)
-        message.match?(AURORA_READONLY_ERROR)
-      end
+      # Reconnect to database and Set `@client`
+      # @note If client is not connected, Connect to database.
+      def reconnect!
+        query_options = (@client&.query_options&.dup || {})
 
-      def aurora_connection_error?(message)
-        AURORA_CONNECTION_ERRORS.any? do |matching_str|
-          message.include?(matching_str)
-        end
-      end
-
-      def aurora_wait_for_availability_after(error)
-        warn "[mysql2-aurora] auto reconnect origin error: #{error.message}, max retries: #{@max_retry}"
-        try_count = 1
-        begin
-          retry_interval_seconds = [1.5 * (try_count - 1), 10].min
-
-          warn "[mysql2-aurora] Retry after #{retry_interval_seconds}seconds"
-          sleep retry_interval_seconds
-          check_client = ::Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.new(@opts)
-
-          if aurora_readonly_error?(error.message)
-            # if error was a readonly type, it must check that we are not being
-            # reconnected to a slave, so we ensure that we are connected to a
-            # master node by checking 'innodb_read_only' MySQL's variable
-            # it must be set to 'OFF' if we are on the master
-            show_variables_res = check_client.query(
-              format(
-                AURORA_READONLY_CHECK_QUERY, ::Mysql2::Aurora.read_only_variable
-              ),
-              as: :array
-            ).to_a
-
-            if show_variables_res.length == 0 ||
-              show_variables_res[0][1].to_s.upcase != 'OFF'
-              raise AuroraReadOnlyError, show_variables_res[0][1]
-            end
-          else
-            check_client.ping
-          end
-        rescue ::Mysql2::Error, AuroraReadOnlyError => e
-          warn "[mysql2-aurora] auto reconnect error: #{e.message}"
-          try_count += 1
-          retry if try_count <= @max_retry
-        end
+        disconnect!
 
         warn "[mysql2-aurora] auto-reconnect success"
+      end
+
+      # Close connection to database server
+      def disconnect!
+        @client&.close
+      rescue StandardError
+        nil
       end
 
       # Delegate method call to client.
