@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'mysql2/aurora/version'
 require 'mysql2'
 
@@ -9,6 +11,8 @@ module Mysql2
     class Client
       attr_reader :client
 
+      READ_ONLY_ERRORS = ['--read-only', '--super-read-only'].freeze
+
       # Initialize class
       # @note [Override] with reconnect options
       # @param [Hash] opts Options
@@ -16,8 +20,9 @@ module Mysql2
       # @option opts [Bool] aurora_disconnect_on_readonly, when readonly exception hit terminate the connection (Default: false)
       def initialize(opts)
         @opts = Mysql2::Util.key_hash_as_symbols(opts)
-        @max_retry = @opts.delete(:aurora_max_retry) || 5
-        @disconnect_only = @opts.delete(:aurora_disconnect_on_readonly) || false
+        @max_retry = (@opts.delete(:aurora_max_retry) || 0).to_i
+        @disconnect_only = @opts.delete(:aurora_disconnect_on_readonly) || true
+        @sleep_before_disconnect = (@opts.delete(:aurora_sleep_before_disconnect) || 0).to_i
         reconnect!
       end
 
@@ -29,17 +34,21 @@ module Mysql2
         begin
           client.query(*args)
         rescue Mysql2::Error => e
-          raise e unless e.message&.include?('--read-only')
-
-          try_count += 1
+          raise e unless read_only_error?(e.message)
 
           if @disconnect_only
             warn '[mysql2-aurora] Database is readonly, Aurora failover event likely occured, closing database connection'
             disconnect!
-          elsif try_count <= @max_retry
+            sleep @sleep_before_disconnect if @sleep_before_disconnect > 0
+            raise e
+          end
+
+          try_count += 1
+
+          if try_count <= @max_retry
             retry_interval_seconds = [1.5 * (try_count - 1), 10].min
 
-            warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds}seconds"
+            warn "[mysql2-aurora] Database is readonly. Retry after #{retry_interval_seconds} seconds"
             sleep retry_interval_seconds
             reconnect!
             retry
@@ -75,6 +84,15 @@ module Mysql2
         client.public_send(name, *args, &block)
       end
 
+      # Check if exception message contains read only specific errors
+      # @param [String] msg Exception message
+      # @return [Boolean]
+      def read_only_error?(msg)
+        return false if msg.nil?
+
+        READ_ONLY_ERRORS.any? { |term| msg.include?(term) }
+      end
+
       # Delegate method call to Mysql2::Client.
       # @param [String] name  Method name
       # @param [Array]  args  Method arguments
@@ -89,9 +107,9 @@ module Mysql2
         Mysql2::Aurora::ORIGINAL_CLIENT_CLASS.const_get(name)
       end
     end
-
-    # Swap Mysql2::Client
-    ORIGINAL_CLIENT_CLASS = Mysql2.send(:remove_const, :Client)
-    Mysql2.const_set(:Client, Mysql2::Aurora::Client)
   end
 end
+
+# Swap Mysql2::Client
+Mysql2::Aurora.const_set(:ORIGINAL_CLIENT_CLASS, Mysql2.send(:remove_const, :Client))
+Mysql2.const_set(:Client, Mysql2::Aurora::Client)
